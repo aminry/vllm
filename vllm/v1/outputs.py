@@ -373,6 +373,11 @@ class ModelRunnerOutput:
     # ``None`` when ``return_sampling_mask`` is off.
     sampling_masks: SamplingMaskLists | None = None
 
+    # req_id -> [num_generated_tokens, hidden_size]: the hidden states the
+    # sampled tokens' logits were computed from, for the requests that set
+    # SamplingParams.return_last_hidden_states. None when none did.
+    last_hidden_states: dict[str, torch.Tensor] | None = None
+
     @staticmethod
     def with_kv_conn_output_only(
         kv_connector_output: KVConnectorOutput | None,

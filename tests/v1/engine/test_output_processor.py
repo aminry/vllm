@@ -6,6 +6,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from tests.v1.engine.utils import (
     NUM_PROMPT_LOGPROBS_UNDER_TEST,
@@ -23,6 +24,7 @@ from vllm.tokenizers import TokenizerLike
 from vllm.v1.engine import (
     EngineCoreEvent,
     EngineCoreEventType,
+    EngineCoreOutput,
     EngineCoreOutputs,
     EngineCoreRequest,
     FinishReason,
@@ -33,6 +35,7 @@ from vllm.v1.engine.output_processor import (
     RequestState,
 )
 from vllm.v1.metrics.stats import IterationStats, SchedulerStats
+from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 
 
 @pytest.mark.parametrize("flat_logprobs", [False, True])
@@ -1328,6 +1331,127 @@ async def test_request_output_collector():
     # Cumulative logprobs should be the last one.
     cumulative_logprob_expected = 1.0 * num_to_put
     assert output.outputs[0].cumulative_logprob == cumulative_logprob_expected
+
+
+@pytest.mark.parametrize(
+    "output_kind", [RequestOutputKind.DELTA, RequestOutputKind.FINAL_ONLY]
+)
+def test_last_hidden_states_are_accumulated_until_finish(
+    output_kind: RequestOutputKind, dummy_test_vectors
+):
+    """One row per generated token, returned with the final output only."""
+    output_processor = OutputProcessor(dummy_test_vectors.tokenizer, log_stats=False)
+    request = EngineCoreRequest(
+        request_id="request-0",
+        external_req_id="external-0",
+        prompt_token_ids=dummy_test_vectors.prompt_tokens[0],
+        mm_features=None,
+        arrival_time=0,
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+        sampling_params=SamplingParams(
+            max_tokens=3,
+            output_kind=output_kind,
+            return_last_hidden_states=True,
+        ),
+        pooling_params=None,
+    )
+    output_processor.add_request(request, None)
+    rows = torch.randn(3, 8).to(torch.bfloat16)
+
+    results = []
+    for step in range(3):
+        finished = step == 2
+        processed = output_processor.process_outputs(
+            [
+                EngineCoreOutput(
+                    request_id="request-0",
+                    new_token_ids=[dummy_test_vectors.generation_tokens[0][step]],
+                    new_last_hidden_states=rows[step : step + 1],
+                    finish_reason=FinishReason.LENGTH if finished else None,
+                )
+            ]
+        )
+        results.extend(processed.request_outputs)
+
+    assert results[-1].finished
+    for partial in results[:-1]:
+        assert partial.outputs[0].last_hidden_states is None
+    final = results[-1].outputs[0]
+    assert final.last_hidden_states.dtype == torch.bfloat16
+    assert torch.equal(final.last_hidden_states, rows)
+
+
+def test_last_hidden_states_do_not_alias_transport_buffers(dummy_test_vectors):
+    """The returned rows own their memory: the decoder hands the output processor
+    zero-copy views of the received frames, which must not outlive the request."""
+    output_processor = OutputProcessor(dummy_test_vectors.tokenizer, log_stats=False)
+    request = EngineCoreRequest(
+        request_id="request-0",
+        external_req_id="external-0",
+        prompt_token_ids=dummy_test_vectors.prompt_tokens[0],
+        mm_features=None,
+        arrival_time=0,
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+        sampling_params=SamplingParams(max_tokens=1, return_last_hidden_states=True),
+        pooling_params=None,
+    )
+    output_processor.add_request(request, None)
+    # Above the zero-copy threshold, so the row travels as an auxiliary buffer.
+    rows = torch.randn(1, 512).to(torch.bfloat16)
+    frames = [
+        bytearray(buf)
+        for buf in MsgpackEncoder().encode(
+            EngineCoreOutputs(
+                outputs=[
+                    EngineCoreOutput(
+                        request_id="request-0",
+                        new_token_ids=[dummy_test_vectors.generation_tokens[0][0]],
+                        new_last_hidden_states=rows,
+                        finish_reason=FinishReason.LENGTH,
+                    )
+                ]
+            )
+        )
+    ]
+    assert len(frames) > 1
+    decoded = MsgpackDecoder(EngineCoreOutputs).decode(frames)
+    processed = output_processor.process_outputs(decoded.outputs)
+
+    final = processed.request_outputs[0].outputs[0].last_hidden_states
+    for frame in frames[1:]:
+        frame[:] = bytes(len(frame))
+    assert torch.equal(final, rows)
+
+
+def test_last_hidden_states_survive_output_aggregation():
+    rows = torch.ones(2, 4)
+    outputs = [
+        RequestOutput(
+            request_id="r",
+            prompt=None,
+            prompt_token_ids=[1, 2],
+            prompt_logprobs=None,
+            outputs=[
+                CompletionOutput(
+                    index=0,
+                    text="a",
+                    token_ids=[idx],
+                    cumulative_logprob=None,
+                    logprobs=None,
+                    last_hidden_states=rows if idx == 1 else None,
+                    finish_reason="length" if idx == 1 else None,
+                )
+            ],
+            finished=idx == 1,
+        )
+        for idx in range(2)
+    ]
+    outputs[0].add(outputs[1], aggregate=True)
+    assert torch.equal(outputs[0].outputs[0].last_hidden_states, rows)
 
 
 @pytest.mark.asyncio

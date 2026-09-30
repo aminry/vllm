@@ -159,6 +159,13 @@ class AsyncOutput(AsyncModelRunnerOutput):
                 k: v.to_cpu_nonblocking() if v is not None else None
                 for k, v in self.model_runner_output.prompt_logprobs_dict.items()
             }
+            last_hidden_states = self.model_runner_output.last_hidden_states
+            self.last_hidden_states: dict[str, torch.Tensor] | None = None
+            if last_hidden_states:
+                self.last_hidden_states = {
+                    k: v.to("cpu", non_blocking=True)
+                    for k, v in last_hidden_states.items()
+                }
             if check_ep_fault:
                 has_fault = get_ep_all2all_manager().query_fault()
                 self._has_fault = has_fault.to("cpu", non_blocking=True)
@@ -192,6 +199,8 @@ class AsyncOutput(AsyncModelRunnerOutput):
         if self.logprobs_tensors is not None:
             self.model_runner_output.logprobs = self.logprobs_tensors.tolists()
         self.model_runner_output.prompt_logprobs_dict = self.prompt_logprobs_dict
+        if self.last_hidden_states is not None:
+            self.model_runner_output.last_hidden_states = self.last_hidden_states
         if self.routed_experts_cpu is not None:
             self.model_runner_output.routed_experts = self.routed_experts_cpu.tolists()
 

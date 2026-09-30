@@ -43,6 +43,10 @@ class CompletionOutput:
             position if the logprobs are requested.
         sampling_mask: The post-processing token support set for each generated
             token, if requested.
+        last_hidden_states: For each generated token, the hidden state its
+            logits were computed from, shaped [len(token_ids), hidden_size] in
+            the model's dtype, if `SamplingParams.return_last_hidden_states` was
+            set. Returned with the final output.
         finish_reason: The reason why the sequence is finished.
         stop_reason: The stop string or token id that caused the completion
             to stop, None if the completion finished for some other reason
@@ -66,6 +70,7 @@ class CompletionOutput:
     lora_request: LoRARequest | None = None
     sampling_mask: SamplingMask | None = None
     spec_decode_metrics: RequestSpecDecodeMetrics | None = None
+    last_hidden_states: torch.Tensor | None = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -192,6 +197,11 @@ class RequestOutput:
                         completion.cumulative_logprob = (
                             next_completion.cumulative_logprob
                         )
+                        # Returned with the terminal output only.
+                        if next_completion.last_hidden_states is not None:
+                            completion.last_hidden_states = (
+                                next_completion.last_hidden_states
+                            )
                         completion.finish_reason = next_completion.finish_reason
                         completion.stop_reason = next_completion.stop_reason
                     else:

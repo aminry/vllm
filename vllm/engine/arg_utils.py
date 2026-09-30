@@ -435,6 +435,9 @@ class EngineArgs:
     model: str = ModelConfig.model
     enable_return_routed_experts: bool = ModelConfig.enable_return_routed_experts
     return_sampling_mask: bool = ModelConfig.return_sampling_mask
+    enable_return_last_hidden_states: bool = (
+        ModelConfig.enable_return_last_hidden_states
+    )
     model_weights: str = ModelConfig.model_weights
     served_model_name: str | list[str] | None = ModelConfig.served_model_name
     tokenizer: str | None = ModelConfig.tokenizer
@@ -913,6 +916,10 @@ class EngineArgs:
         model_group.add_argument(
             "--return-sampling-mask",
             **model_kwargs["return_sampling_mask"],
+        )
+        model_group.add_argument(
+            "--enable-return-last-hidden-states",
+            **model_kwargs["enable_return_last_hidden_states"],
         )
         model_group.add_argument("--max-logprobs", **model_kwargs["max_logprobs"])
         model_group.add_argument("--logprobs-mode", **model_kwargs["logprobs_mode"])
@@ -1843,6 +1850,7 @@ class EngineArgs:
             enforce_eager=self.enforce_eager,
             enable_return_routed_experts=self.enable_return_routed_experts,
             return_sampling_mask=self.return_sampling_mask,
+            enable_return_last_hidden_states=self.enable_return_last_hidden_states,
             max_logprobs=self.max_logprobs,
             logprobs_mode=self.logprobs_mode,
             use_fp64_gumbel=self.use_fp64_gumbel,
