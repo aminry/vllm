@@ -2029,6 +2029,11 @@ class ModelConfig:
         return self._model_info.is_attention_free
 
     @property
+    def aux_readout_dims(self) -> dict[str, int]:
+        """Readout name -> width declared by the model (empty if none)."""
+        return dict(self._model_info.aux_readout_dims)
+
+    @property
     def is_hybrid(self) -> bool:
         if not self._model_info.is_hybrid:
             return False
