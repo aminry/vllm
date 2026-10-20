@@ -73,6 +73,9 @@ class CompletionOutput:
             logits were computed from, shaped [len(token_ids), hidden_size] in
             the model's dtype, if `SamplingParams.return_last_hidden_states` was
             set. Returned with the final output.
+        aux_readouts: For each name in `SamplingParams.aux_readouts`, a float32
+            tensor [len(token_ids), width] of the model's auxiliary readout at
+            each generated token. Returned with the final output.
         finish_reason: The reason why the sequence is finished.
         stop_reason: The stop string or token id that caused the completion
             to stop, None if the completion finished for some other reason
@@ -99,6 +102,7 @@ class CompletionOutput:
     lora_request: LoRARequest | None = None
     sampling_mask: SamplingMask | None = None
     spec_decode_metrics: RequestSpecDecodeMetrics | None = None
+    aux_readouts: dict[str, torch.Tensor] | None = None
     weight_versions: list[WeightVersionSpan] | None = None
     last_hidden_states: torch.Tensor | None = None
 
@@ -248,6 +252,8 @@ class RequestOutput:
                         # aggregation with earlier chunks that have no R3.
                         if next_completion.routed_experts is not None:
                             completion.routed_experts = next_completion.routed_experts
+                        if next_completion.aux_readouts is not None:
+                            completion.aux_readouts = next_completion.aux_readouts
                         # Like finish_reason, spans come only with the terminal output.
                         completion.weight_versions = next_completion.weight_versions
                         if next_completion.last_hidden_states is not None:

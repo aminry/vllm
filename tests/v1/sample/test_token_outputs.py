@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from vllm.v1.token_outputs import LAST_HIDDEN_STATES, TokenOutputs, allowed, requested
+from vllm.v1.token_outputs import (
+    AUX_READOUTS,
+    LAST_HIDDEN_STATES,
+    TokenOutputs,
+    allowed,
+    requested,
+)
 
 
 def _batch(num_logits: list[int], logits_indices: list[int]):
@@ -25,17 +31,41 @@ def _asked(result):
     return result
 
 
-def _params(asks: bool):
-    return SimpleNamespace(return_last_hidden_states=asks)
+def _params(asks: bool, readouts: list[str] | None = None):
+    return SimpleNamespace(return_last_hidden_states=asks, aux_readouts=readouts)
 
 
-def test_entries_follow_the_engine_flag_and_the_request():
-    assert allowed(SimpleNamespace(enable_return_last_hidden_states=False)) == []
-    assert allowed(SimpleNamespace(enable_return_last_hidden_states=True)) == [
-        LAST_HIDDEN_STATES
-    ]
+def _config(hidden: bool, readouts: bool):
+    return SimpleNamespace(
+        enable_return_last_hidden_states=hidden, enable_aux_readouts=readouts
+    )
+
+
+def test_entries_follow_the_engine_flags_and_the_request():
+    assert allowed(_config(False, False)) == []
+    assert allowed(_config(True, False)) == [LAST_HIDDEN_STATES]
+    assert allowed(_config(False, True)) == [AUX_READOUTS]
+    assert allowed(_config(True, True)) == [LAST_HIDDEN_STATES, AUX_READOUTS]
     assert requested(_params(False)) == []
     assert requested(_params(True)) == [LAST_HIDDEN_STATES]
+    assert requested(_params(False, ["decision"])) == [AUX_READOUTS]
+    assert requested(_params(True, ["decision"])) == [LAST_HIDDEN_STATES, AUX_READOUTS]
+    assert requested(_params(False, None)) == [] and requested(_params(False, [])) == []
+
+
+def test_a_request_gets_only_the_entries_it_asked_for():
+    hidden = torch.arange(12, dtype=torch.float32).view(6, 2)
+    batch = _batch([1, 1], [1, 4])
+    outputs = TokenOutputs([LAST_HIDDEN_STATES, AUX_READOUTS])
+    outputs.add_request("r0", _params(True))
+    outputs.add_request("r1", _params(False, ["decision"]))
+    out = _asked(outputs.gather(hidden, batch, {AUX_READOUTS: lambda rows: rows * 2}))
+    assert list(out[LAST_HIDDEN_STATES]) == ["r0"]
+    assert list(out[AUX_READOUTS]) == ["r1"]
+    assert torch.equal(out[AUX_READOUTS]["r1"], hidden[[4]] * 2)
+    assert outputs.num_requests() == 2
+    outputs.remove_request("r1")
+    assert outputs.num_requests() == 1
 
 
 def test_gather_returns_the_rows_compute_logits_reads_for_the_requests_that_asked():

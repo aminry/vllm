@@ -491,6 +491,7 @@ class EngineArgs:
     enable_return_last_hidden_states: bool = (
         ModelConfig.enable_return_last_hidden_states
     )
+    enable_aux_readouts: bool = ModelConfig.enable_aux_readouts
     model_weights: str = ModelConfig.model_weights
     served_model_name: str | list[str] | None = ModelConfig.served_model_name
     tokenizer: str | None = ModelConfig.tokenizer
@@ -1005,6 +1006,9 @@ class EngineArgs:
         model_group.add_argument(
             "--enable-return-last-hidden-states",
             **model_kwargs["enable_return_last_hidden_states"],
+        )
+        model_group.add_argument(
+            "--enable-aux-readouts", **model_kwargs["enable_aux_readouts"]
         )
         model_group.add_argument("--max-logprobs", **model_kwargs["max_logprobs"])
         model_group.add_argument("--logprobs-mode", **model_kwargs["logprobs_mode"])
@@ -2014,6 +2018,7 @@ class EngineArgs:
             enforce_eager=self.enforce_eager,
             return_sampling_mask=self.return_sampling_mask,
             enable_return_last_hidden_states=self.enable_return_last_hidden_states,
+            enable_aux_readouts=self.enable_aux_readouts,
             max_logprobs=self.max_logprobs,
             logprobs_mode=self.logprobs_mode,
             use_fp64_gumbel=self.use_fp64_gumbel,
