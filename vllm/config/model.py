@@ -287,6 +287,11 @@ class ModelConfig:
     """Whether requests may ask for the hidden state each generated token's
     logits were computed from (`SamplingParams.return_last_hidden_states`).
     When disabled, such requests are rejected and nothing else changes."""
+    enable_aux_readouts: bool = False
+    """Whether requests may ask for the model's auxiliary readouts
+    (`SamplingParams.aux_readouts`): small float32 outputs, such as an N-way
+    decision head, computed from the hidden states that generation samples
+    from. Requires a model implementing `SupportsAuxReadout`."""
     max_logprobs: int = Field(default=20, ge=-1)
     """Maximum number of log probabilities to return when `logprobs` is
     specified in `SamplingParams`. The default value comes the default for the
@@ -486,6 +491,7 @@ class ModelConfig:
             "enforce_eager",
             "return_sampling_mask",
             "enable_return_last_hidden_states",
+            "enable_aux_readouts",
             "logprobs_mode",
             "use_fp64_gumbel",
             "enable_trace_replay",

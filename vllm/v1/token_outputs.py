@@ -11,7 +11,10 @@ An entry is allowed by an engine flag that is off by default, asked for per
 request on `SamplingParams`, and computed from the rows of the hidden states
 that `compute_logits` receives. With every flag off the runner holds no state
 and does no work; with one on, only the requests that ask pay. The last hidden
-states are the first entry.
+states are the first entry; the auxiliary readouts of a model that implements
+`SupportsAuxReadout` are the second: one tensor [rows, sum of the widths of the
+model's readouts] on the channel, cut into the requested names by the output
+processor.
 """
 
 from collections.abc import Callable, Iterable
@@ -25,16 +28,31 @@ if TYPE_CHECKING:
     from vllm.v1.worker.gpu.input_batch import InputBatch
 
 LAST_HIDDEN_STATES = "last_hidden_states"
+AUX_READOUTS = "aux_readouts"
 
 
 def allowed(model_config: "ModelConfig") -> list[str]:
     """The entries the engine's flags allow."""
-    return [LAST_HIDDEN_STATES] if model_config.enable_return_last_hidden_states else []
+    return [
+        name
+        for name, flag in (
+            (LAST_HIDDEN_STATES, model_config.enable_return_last_hidden_states),
+            (AUX_READOUTS, model_config.enable_aux_readouts),
+        )
+        if flag
+    ]
 
 
 def requested(sampling_params: "SamplingParams") -> list[str]:
     """The entries a request asks for."""
-    return [LAST_HIDDEN_STATES] if sampling_params.return_last_hidden_states else []
+    return [
+        name
+        for name, asked in (
+            (LAST_HIDDEN_STATES, sampling_params.return_last_hidden_states),
+            (AUX_READOUTS, bool(sampling_params.aux_readouts)),
+        )
+        if asked
+    ]
 
 
 class TokenOutputs:
@@ -50,6 +68,11 @@ class TokenOutputs:
     def remove_request(self, req_id: str) -> None:
         for req_ids in self._req_ids.values():
             req_ids.discard(req_id)
+
+    def num_requests(self) -> int:
+        """The number of (request, entry) pairs held; 0 once every finished
+        request has been removed."""
+        return sum(len(req_ids) for req_ids in self._req_ids.values())
 
     def gather(
         self,

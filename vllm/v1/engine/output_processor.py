@@ -42,7 +42,7 @@ from vllm.v1.metrics.stats import (
     SchedulerStats,
 )
 from vllm.v1.outputs import SamplingMaskLists
-from vllm.v1.token_outputs import LAST_HIDDEN_STATES
+from vllm.v1.token_outputs import AUX_READOUTS, LAST_HIDDEN_STATES
 
 if TYPE_CHECKING:
     from vllm.v1.engine.admission_control import SharedAdmissionStats
@@ -243,6 +243,8 @@ class RequestState:
         self.weight_version_starts: list[tuple[str, int]] = []
         # entry -> the rows received so far (vllm/v1/token_outputs.py).
         self.token_output_chunks: dict[str, list[torch.Tensor]] = {}
+        # (name, start, end) column slices of the requested auxiliary readouts.
+        self.aux_readout_slices: list[tuple[str, int, int]] | None = None
 
         # Stream Interval
         self.stream_interval = stream_interval
@@ -349,6 +351,8 @@ class RequestState:
             stream_input=request.resumable,
             remote_prefill_cached_tokens=remote_prefill_cached_tokens,
         )
+        if sampling_params is not None:
+            state.aux_readout_slices = sampling_params._aux_readout_slices
         if state.stats is not None and sampling_params is not None:
             state.stats.is_watermarked = bool(sampling_params.watermarking)
             state.stats.is_watermark_skipped = sampling_params._watermarking_skipped
@@ -524,6 +528,11 @@ class RequestState:
                 for name, chunks in self.token_output_chunks.items()
             }
 
+        aux_readouts = None
+        if AUX_READOUTS in token_outputs and self.aux_readout_slices:
+            joined = token_outputs[AUX_READOUTS]
+            aux_readouts = {n: joined[:, a:b] for n, a, b in self.aux_readout_slices}
+
         return CompletionOutput(
             index=self.request_index,
             text=text,
@@ -531,6 +540,7 @@ class RequestState:
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
             last_hidden_states=token_outputs.get(LAST_HIDDEN_STATES),
+            aux_readouts=aux_readouts,
             logprobs=logprobs,
             cumulative_logprob=self.logprobs_processor.cumulative_logprob,
             finish_reason=str(finish_reason) if finished else None,

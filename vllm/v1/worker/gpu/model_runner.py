@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from contextlib import AbstractContextManager, nullcontext
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import torch
@@ -53,7 +53,10 @@ from vllm.model_executor.layers.quantization.online.lm_head import (
 )
 from vllm.model_executor.model_loader import get_model_loader
 from vllm.model_executor.model_loader.reload.inplace import reload_weights
-from vllm.model_executor.models.interfaces import requires_raw_input_tokens
+from vllm.model_executor.models.interfaces import (
+    SupportsAuxReadout,
+    requires_raw_input_tokens,
+)
 from vllm.model_executor.offloader import (
     create_offloader,
     get_offloader,
@@ -83,7 +86,7 @@ from vllm.v1.outputs import (
     ECConnectorOutput,
     ModelRunnerOutput,
 )
-from vllm.v1.token_outputs import TokenOutputs
+from vllm.v1.token_outputs import AUX_READOUTS, TokenOutputs
 from vllm.v1.token_outputs import allowed as allowed_token_outputs
 from vllm.v1.watermarking import create_watermarker
 from vllm.v1.watermarking.gpu_sampler import GPUWatermarkSampler
@@ -352,6 +355,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         token_output_names = allowed_token_outputs(self.model_config)
         self.token_outputs: TokenOutputs | None = (
             TokenOutputs(token_output_names) if token_output_names else None
+        )
+        self.aux_readout_width = (
+            sum(self.model_config.aux_readout_dims.values())
+            if AUX_READOUTS in token_output_names
+            else 0
         )
         self.structured_outputs_worker: StructuredOutputsWorker | None = None
         self.cudagraph_manager: ModelCudaGraphManager | None = None
@@ -2186,6 +2194,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
         return None
 
+    def _compute_aux_readouts(self, rows: torch.Tensor) -> torch.Tensor:
+        """The model's readouts of `rows` ([n, hidden_size], the rows that
+        `compute_logits` reads), as [n, sum(aux_readout_dims)] float32."""
+        model = cast(SupportsAuxReadout, self.model)
+        readouts = model.compute_aux_readouts(rows)
+        expected = (rows.shape[0], self.aux_readout_width)
+        if tuple(readouts.shape) != expected:
+            raise ValueError(
+                f"{type(model).__name__}.compute_aux_readouts returned shape "
+                f"{tuple(readouts.shape)}; expected {expected} "
+                "(rows, sum of aux_readout_dims)"
+            )
+        return readouts.float()
+
     @torch.inference_mode()
     @step_eplb_after()
     def sample_tokens(
@@ -2283,7 +2305,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )
         if self.token_outputs is not None:
             model_runner_output.token_outputs = self.token_outputs.gather(
-                hidden_states, input_batch
+                hidden_states, input_batch, {AUX_READOUTS: self._compute_aux_readouts}
             )
         pending_aux_output = None
         if self.aux_output_connector is not None:

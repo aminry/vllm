@@ -3,6 +3,7 @@
 
 import math
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import numpy as np
@@ -97,6 +98,7 @@ def test_completion_output_preserves_each_sampling_mask_position() -> None:
     ]
     state.routed_experts_chunks = []
     state.token_output_chunks = {}
+    state.aux_readout_slices = None
     state.spec_decode_metrics = None
     state.weight_version_starts = []
 
@@ -1658,6 +1660,93 @@ def test_last_hidden_states_do_not_alias_transport_buffers(dummy_test_vectors):
     assert torch.equal(final, rows)
 
 
+def test_aux_readouts_are_split_by_name_when_the_request_finishes(dummy_test_vectors):
+    """One tensor per step on the channel; the final output carries one float32
+    tensor per requested name, cut at the model's declared columns, and nothing
+    in the partial outputs. A request that asked for both entries gets both."""
+    params = SamplingParams(
+        max_tokens=3,
+        output_kind=RequestOutputKind.FINAL_ONLY,
+        return_last_hidden_states=True,
+        aux_readouts=["score", "decision"],
+    )
+    params._validate_aux_readouts(
+        SimpleNamespace(
+            enable_aux_readouts=True, aux_readout_dims={"decision": 3, "score": 1}
+        )
+    )
+    output_processor = OutputProcessor(dummy_test_vectors.tokenizer, log_stats=False)
+    output_processor.add_request(
+        EngineCoreRequest(
+            request_id="request-0",
+            external_req_id="external-0",
+            prompt_token_ids=dummy_test_vectors.prompt_tokens[0],
+            mm_features=None,
+            arrival_time=0,
+            lora_request=None,
+            cache_salt=None,
+            data_parallel_rank=None,
+            sampling_params=params,
+            pooling_params=None,
+        ),
+        None,
+    )
+    readouts = torch.randn(3, 4)
+    hidden = torch.randn(3, 8)
+    results = []
+    for step in range(3):
+        processed = output_processor.process_outputs(
+            [
+                EngineCoreOutput(
+                    request_id="request-0",
+                    new_token_ids=[dummy_test_vectors.generation_tokens[0][step]],
+                    new_token_outputs={
+                        "last_hidden_states": hidden[step : step + 1],
+                        "aux_readouts": readouts[step : step + 1],
+                    },
+                    finish_reason=FinishReason.LENGTH if step == 2 else None,
+                )
+            ]
+        )
+        results.extend(processed.request_outputs)
+
+    final = results[-1].outputs[0]
+    assert results[-1].finished and all(
+        r.outputs[0].aux_readouts is None for r in results[:-1]
+    )
+    assert set(final.aux_readouts) == {"decision", "score"}
+    assert torch.equal(final.aux_readouts["decision"], readouts[:, 0:3])
+    assert torch.equal(final.aux_readouts["score"], readouts[:, 3:4])
+    assert torch.equal(final.last_hidden_states, hidden)
+
+
+def test_aux_readouts_survive_output_aggregation():
+    readouts = {"decision": torch.ones(2, 3)}
+    outputs = [
+        RequestOutput(
+            request_id="r",
+            prompt=None,
+            prompt_token_ids=[1, 2],
+            prompt_logprobs=None,
+            outputs=[
+                CompletionOutput(
+                    index=0,
+                    text="a",
+                    token_ids=[idx],
+                    cumulative_logprob=None,
+                    logprobs=None,
+                    aux_readouts=readouts if idx == 1 else None,
+                    finish_reason="length" if idx == 1 else None,
+                )
+            ],
+            finished=idx == 1,
+        )
+        for idx in range(2)
+    ]
+    outputs[0].add(outputs[1], aggregate=True)
+    assert outputs[0].outputs[0].aux_readouts is readouts
+
+
 def test_last_hidden_states_survive_output_aggregation():
     rows = torch.ones(2, 4)
     outputs = [
@@ -2003,6 +2092,7 @@ def test_sampling_masks_follow_output_kind(output_kind):
     state.sampling_mask_chunks = []
     state.routed_experts_chunks = []
     state.token_output_chunks = {}
+    state.aux_readout_slices = None
     state.spec_decode_metrics = None
     state.weight_version_starts = []
 
