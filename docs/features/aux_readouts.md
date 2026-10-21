@@ -25,6 +25,15 @@ of `aux_readout_dims`, as one `[num_rows, sum(aux_readout_dims.values())]`
 tensor; any other shape is an error. During chunked prefill, the row of a chunk
 that does not finish the prompt is computed and discarded, like its logits.
 
+A subclass registered under a new architecture name is looked up by that name, so
+it does not get the per-architecture config that `MODELS_CONFIG_MAP`
+(`vllm/model_executor/models/config.py`) gives its parent. For
+`Qwen3_5ForConditionalGeneration` that is
+`Qwen3_5ForConditionalGenerationConfig`, which sets `mamba_ssm_cache_dtype` from
+the HF config's `mamba_ssm_dtype`. Set such values explicitly (for example
+`--mamba-ssm-cache-dtype`), or register the subclass under the parent's config
+by adding its architecture name to `MODELS_CONFIG_MAP`.
+
 ## Request side
 
 ```python
